@@ -33,3 +33,5 @@ Thumbs.db
 # Configuración local
 build.properties
 local.properties
+# Local Pi runtime state
+.atl/
