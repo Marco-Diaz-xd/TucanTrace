@@ -63,6 +63,10 @@ public class DiagramViewer extends JFrame {
      * Abre la URL en el navegador por defecto del sistema.
      */
     public static void openInBrowser(String url) {
+        if (GraphicsEnvironment.isHeadless()) {
+            System.out.println("🔗 Abre la interfaz en tu navegador: " + url);
+            return;
+        }
         try {
             if (Desktop.isDesktopSupported() && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
                 Desktop.getDesktop().browse(new URI(url));

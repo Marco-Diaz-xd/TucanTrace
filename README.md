@@ -11,9 +11,10 @@ Transforma el código fuente Java de estudiantes en diagramas UML interactivos y
 Herramienta de apoyo docente e investigación para los cursos de **Lógica & Algoritmos II** y **Programación Orientada a Objetos** en la Universidad de la Amazonia. Sus principales capacidades son:
 
 1. **Análisis Estático Automático:** Genera diagramas UML de clases a partir del código fuente Java (`.java`) sin requerir diagramación manual previa.
-2. **Visualización Vectorial Reactiva (SVG):** Emite diagramas SVG enriquecidos con IDs semánticos (`id="class_X"`, `id="method_X_Y"`, `id="field_X_Z"`) y estilos CSS acelerados por hardware.
-3. **Trazabilidad de Ejecución en Vivo (JDI/JPDA):** Se conecta mediante sockets a la JVM del estudiante para interceptar invocaciones de métodos, modificaciones de atributos y carga de clases, iluminando el diagrama en vivo sin alterar el código fuente del estudiante.
-4. **Visor Web con Streaming SSE:** Servidor web HTTP embebido (`http://localhost:8080/`) que transmite eventos en tiempo real mediante *Server-Sent Events* (SSE).
+2. **Scanner & Validador de Estándares Académicos:** Valida la estructura contra las Guías 1 y 2 del curso (UpperCamelCase, encapsulamiento `private`, lowerCamelCase, responsabilidades de negocio).
+3. **Visualización Vectorial Reactiva (SVG):** Emite diagramas SVG enriquecidos con IDs semánticos (`id="class_X"`, `id="method_X_Y"`, `id="field_X_Z"`) y estilos CSS acelerados por hardware.
+4. **Trazabilidad de Ejecución en Vivo (JDI/JPDA):** Se conecta mediante sockets a la JVM del estudiante para interceptar invocaciones de métodos, modificaciones de atributos y carga de clases, iluminando el diagrama en vivo sin alterar el código fuente del estudiante.
+5. **Visores Web con Streaming SSE:** Servidores HTTP embebidos locales con Server-Sent Events para visualización moderna tanto en modo reactivo como en modo interactivo de doble pestaña con terminal en vivo.
 
 ---
 
@@ -29,6 +30,7 @@ Herramienta de apoyo docente e investigación para los cursos de **Lógica & Alg
 │             CAPA 1: ANÁLISIS ESTÁTICO (JavaParser)               │
 │  • Recorrido de archivos .java y construcción del AST           │
 │  • Extracción de Clases, Interfaces, Atributos, Métodos, Herencia│
+│  • Validador de Estándares de Codificación (Guías 1 y 2)        │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │
                                  ▼
@@ -43,7 +45,8 @@ Herramienta de apoyo docente e investigación para los cursos de **Lógica & Alg
 │      CAPA 3: RUNTIME & STREAMING (JDI Client & Web Server SSE)   │
 │  • JVM Estudiante: -agentlib:jdwp=transport=dt_socket,port=5005  │
 │  • JDI Client: Captura MethodEntry, MethodExit, FieldModification│
-│  • Servidor HTTP Embebido: Streaming SSE hacia el Visor Web      │
+│  • TargetLauncher: Gestión de proceso hijo y captura stdout      │
+│  • Servidores HTTP Embebidos: Streaming SSE hacia el Visor Web   │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -56,8 +59,8 @@ Herramienta de apoyo docente e investigación para los cursos de **Lógica & Alg
 | **Lenguaje Base** | Java 21 LTS | Soporte de switch pattern matching, record types y APIs modernas. |
 | **Sistema de Build** | Apache Ant 1.10+ | Compatibilidad nativa con Apache NetBeans y portabilidad CLI. |
 | **Parser Sintáctico** | [JavaParser 3.25.0](https://javaparser.org/) | Análisis de AST robusto y tipado sin compilar el proyecto. |
-| **Generación UML** | [PlantUML 1.2023.13](https://plantuml.com/) | Generación programática de SVG en memoria. |
-| **Runtime Tracing** | JDI / JPDA (`com.sun.jdi`) | Inspección no invasiva con política `SUSPEND_NONE`. |
+| **Generación UML** | [PlantUML](https://plantuml.com/) | Generación programática de SVG en memoria. |
+| **Runtime Tracing** | JDI / JPDA (`com.sun.jdi`) | Inspección no invasiva con política `SUSPEND_EVENT_THREAD`. |
 | **Servidor & Streaming**| `com.sun.net.httpserver` + SSE | Servidor HTTP ultraligero embebido sin dependencias pesadas. |
 | **Visor Web** | HTML5 / CSS3 / SVG Reactivo | Manipulación del DOM en tiempo real con 0 ms de latencia. |
 | **IDE Soportado** | Apache NetBeans 18+ | Integración mediante *VM Options* estándar. |
@@ -68,7 +71,7 @@ Herramienta de apoyo docente e investigación para los cursos de **Lógica & Alg
 
 ```
 TucanTrace/
-├── build.xml                 # Script Ant (compile, run, run-jdi, jar, clean)
+├── build.xml                 # Script Ant (compile, run, interactive, run-jdi, jar, clean)
 ├── README.md                 # Documentación principal del repositorio
 ├── LICENSE                   # Licencia de código abierto MIT
 ├── lib/                      # Dependencias JAR (JavaParser, PlantUML, Gson, SLF4J)
@@ -81,19 +84,33 @@ TucanTrace/
 │   ├── demo_live.html        # Comparativa interactiva PNG vs SVG
 │   ├── tucango_live.html     # Visor en vivo pre-renderizado de TucanGo v5.0
 │   └── generate_tucango_demo.py
+├── scripts/                  # Scripts utilitarios multiplataforma
+│   ├── ant.ps1               # Ejecutor Ant portátil (descarga libs si falta)
+│   ├── live.bat              # Lanzador rápido de visualización interactiva
+│   └── live-interactivo.bat  # Lanzador interactivo con consola guiada
+├── case-study/               # Casos de prueba académicos
+│   └── tucango-model/        # Modelo TucanGo v5.0 (12 clases Java)
 └── src/
     └── tucantrace/
-        ├── Main.java                 # Punto de entrada principal y orquestador CLI
+        ├── Main.java                 # Orquestador CLI unificado
+        ├── InteractivePrototype.java # Menú consola interactivo paso a paso
         ├── agent/
         │   └── TraceAgent.java       # Agente Java opcional (-javaagent)
         ├── parser/
-        │   ├── JavaParserAdapter.java    # Extracción de AST y DTOs
-        │   └── PlantUMLGenerator.java    # Generación y enriquecimiento de SVG
+        │   ├── JavaParserAdapter.java      # Extracción de AST y DTOs
+        │   ├── PlantUMLGenerator.java      # Generación y enriquecimiento de SVG
+        │   └── CourseStandardValidator.java # Validador de Guías 1 y 2
         ├── runtime/
-        │   └── JDIClient.java            # Conexión socket JDI y despachador de eventos
+        │   ├── JDIClient.java        # Conexión socket JDI y captura segura
+        │   └── TargetLauncher.java   # Ejecución y supervisión del proceso Java hijo
         └── ui/
-            ├── DiagramViewer.java        # Visor de escritorio Swing integrado
-            └── TraceWebServer.java       # Servidor HTTP embebido y streaming SSE
+            ├── DiagramViewer.java    # Visor Swing integrado
+            ├── TraceWebServer.java   # Servidor HTTP embebido y streaming SSE reactivo
+            ├── LiveServer.java       # Servidor HTTP SSE ultraligero para visor 2 pestañas
+            ├── LiveSession.java      # Sesión de visualización en navegador
+            ├── LiveController.java   # Controlador de re-ejecución del programa
+            ├── LiveDiagramPage.java  # Plantilla HTML del diagrama en vivo
+            └── TerminalPage.java     # Plantilla HTML de la terminal en vivo
 ```
 
 ---
@@ -109,16 +126,41 @@ TucanTrace/
 ant compile
 ```
 
-### 3. Ejecutar TucanTrace en Modo Estático / Demostración
-Genera el diagrama UML del directorio fuente especificado y levanta el servidor web:
+### 3. Modos de Ejecución
+
+#### A. Prototipo Interactivo en Consola (Scanner + Validador)
+Permite escanear proyectos, inspeccionar atributos/métodos, validar normas y trazar ejecuciones paso a paso:
+```bash
+ant interactive
+```
+O directamente con Java:
+```bash
+java -cp "build/classes:lib/*" tucantrace.InteractivePrototype
+```
+
+#### B. Visor Live en Navegador de Dos Pestañas (`--live`)
+Lanza el programa objetivo automáticamente en un proceso hijo, abre el navegador con el diagrama UML y la terminal interactiva con botón de re-ejecución:
+```bash
+# Ejemplo con caso de estudio TucanGo
+java -cp "build/classes:lib/*" tucantrace.Main --live \
+  --exec co.edu.uniamazonia.logica2.Main \
+  --exec-cp build/case-study-classes \
+  --http-port 8077 --port 5005 --delay 150
+```
+
+#### C. Servidor Web Reactivo Embebido SSE (`--web`)
+Inicia el servidor web reactivo en `http://localhost:8080/` con soporte completo de CSS interactivo y resaltado vectorial:
 ```bash
 ant run
+# O con parámetros personalizados:
+java -cp "build/classes:lib/*" tucantrace.Main case-study/tucango-model/src --web --port=8080 --jdi
 ```
-O especificando una ruta personalizada y puerto:
+
+#### D. Trazado JDI Directo en Consola (`--jdi`)
+Se conecta a cualquier JVM objetivo iniciada con `-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005`:
 ```bash
-java -cp "dist/TucanTrace.jar:lib/*" tucantrace.Main /ruta/a/tu/codigo/src --port=8080
+java -cp "build/classes:lib/*" tucantrace.Main case-study/tucango-model/src --jdi --host 127.0.0.1 --port 5005
 ```
-Abre tu navegador en: **`http://localhost:8080/`**
 
 ---
 
@@ -129,26 +171,20 @@ Abre tu navegador en: **`http://localhost:8080/`**
 2. Selecciona la categoría **Run**.
 3. En el campo **VM Options**, ingresa:
    ```properties
-   -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005
+   -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005
    ```
 4. Haz clic en **OK** y ejecuta el proyecto en NetBeans (**F6**).
 
 ### Paso 2: Conectar TucanTrace con Enlace JDI
-En una terminal, ejecuta TucanTrace con la bandera `--jdi`:
+En una terminal, ejecuta TucanTrace en modo JDI o inicia el visor web:
 ```bash
 ant run-jdi
 ```
-O directamente con el comando Java:
-```bash
-java -cp "dist/TucanTrace.jar:lib/*" tucantrace.Main /ruta/al/proyecto/estudiante/src --jdi --port=8080
-```
-
-### Paso 3: Observar el Trazado en Tiempo Real
-Abre **`http://localhost:8080/`**. Al interactuar con la aplicación del estudiante, observarás cómo:
+Al interactuar con la aplicación del estudiante, observarás cómo:
 - Las clases cargadas se iluminan con resplandor azul (`ClassPrepare`).
 - Los métodos invocados se resaltan en rojo negrita (`MethodEntry`).
 - Los atributos modificados se destacan en color púrpura (`FieldModification`).
-- La consola lateral registra la secuencia cronológica de eventos en milisegundos.
+- La consola registra cronológicamente cada cambio con su valor en tiempo real.
 
 ---
 

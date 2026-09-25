@@ -24,11 +24,13 @@
 
     <!-- Main class -->
     <property name="main.class"     value="tucantrace.Main"/>
+    <property name="interactive.class" value="tucantrace.InteractivePrototype"/>
 
     <!-- ================================================================
-         Classpath: todas las librerías en lib/
+         Classpath: clases compiladas + todas las librerías en lib/
          ================================================================ -->
     <path id="project.classpath">
+        <pathelement location="${classes.dir}"/>
         <fileset dir="${lib.dir}" includes="*.jar"/>
     </path>
 
@@ -100,6 +102,16 @@
               failonerror="true">
             <jvmarg value="-Dfile.encoding=UTF-8"/>
             <jvmarg value="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005"/>
+        </java>
+    </target>
+
+    <!-- Prototipo interactivo (menú por consola) -->
+    <target name="interactive" depends="compile" description="Ejecuta el prototipo interactivo con scanner">
+        <java classname="${interactive.class}"
+              classpathref="project.classpath"
+              fork="true"
+              failonerror="true">
+            <jvmarg value="-Dfile.encoding=UTF-8"/>
         </java>
     </target>
 

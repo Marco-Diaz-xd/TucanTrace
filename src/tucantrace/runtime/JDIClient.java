@@ -6,7 +6,6 @@ import com.sun.jdi.connect.Connector;
 import com.sun.jdi.event.*;
 import com.sun.jdi.request.*;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
@@ -15,13 +14,14 @@ import java.util.concurrent.LinkedBlockingQueue;
 
 /**
  * Cliente JDI para conectarse a una JVM en ejecución y escuchar eventos
- * de ejecución en tiempo real.
+ * de ejecución en tiempo real (invocación de métodos, modificación de atributos,
+ * carga de clases).
  * <p>
  * Usa la API estándar JDI (com.sun.jdi) disponible en el JDK.
  * No requiere modificar el código del estudiante; solo requiere que la JVM
  * objetivo se inicie con:
  * <pre>
- * -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005
+ * -agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=*:5005
  * </pre>
  * </p>
  */
@@ -29,11 +29,12 @@ public class JDIClient implements AutoCloseable {
 
     private final String host;
     private final int port;
-    private final String classPattern;
+    private final String classFilter;
     private VirtualMachine vm;
     private final BlockingQueue<JDIEvent> eventQueue = new LinkedBlockingQueue<>();
     private final List<JDIEventListener> listeners = new CopyOnWriteArrayList<>();
-    private volatile boolean running = false;
+    private volatile boolean running = true;
+    private volatile boolean terminated = false;
 
     /**
      * Interfaz de listener para eventos JDI.
@@ -43,14 +44,19 @@ public class JDIClient implements AutoCloseable {
         void onEvent(JDIEvent event);
     }
 
-    public JDIClient(String host, int port, String classPattern) {
+    /**
+     * @param host        host de la JVM objetivo
+     * @param port        puerto JDWP (ej. 5005)
+     * @param classFilter prefijo de paquete a observar (ej. "co.edu.uniamazonia.logica2")
+     */
+    public JDIClient(String host, int port, String classFilter) {
         this.host = host;
         this.port = port;
-        this.classPattern = classPattern != null ? classPattern : "*";
+        this.classFilter = classFilter != null ? classFilter.trim() : "";
     }
 
     public JDIClient(String host, int port) {
-        this(host, port, "*");
+        this(host, port, "");
     }
 
     public void addListener(JDIEventListener listener) {
@@ -62,7 +68,7 @@ public class JDIClient implements AutoCloseable {
     }
 
     /**
-     * Conecta a la JVM objetivo.
+     * Conecta a la JVM objetivo y registra las solicitudes de eventos.
      */
     public void connect() throws Exception {
         VirtualMachineManager vmm = Bootstrap.virtualMachineManager();
@@ -74,100 +80,75 @@ public class JDIClient implements AutoCloseable {
             .orElseThrow(() -> new IllegalStateException("SocketAttach connector no disponible"));
 
         Map<String, Connector.Argument> arguments = connector.defaultArguments();
-        Connector.Argument hostArg = arguments.get("hostname");
-        Connector.Argument portArg = arguments.get("port");
-        hostArg.setValue(this.host);
-        portArg.setValue(String.valueOf(this.port));
+        arguments.get("hostname").setValue(this.host);
+        arguments.get("port").setValue(String.valueOf(this.port));
 
         this.vm = connector.attach(arguments);
-        System.out.println("✅ JDI conectado a " + host + ":" + port);
 
-        // Solicitar eventos de interés
         EventRequestManager erm = vm.eventRequestManager();
+        String filterPattern = normalizeFilter(classFilter);
 
-        // 1. MethodEntryEvent
+        // Métodos: entrada y salida
         MethodEntryRequest mer = erm.createMethodEntryRequest();
-        if (!"*".equals(classPattern)) {
-            mer.addClassFilter(classPattern);
+        if (!filterPattern.isEmpty() && !"*".equals(filterPattern)) {
+            mer.addClassFilter(filterPattern);
         }
-        mer.setSuspendPolicy(EventRequest.SUSPEND_NONE);
+        mer.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
         mer.enable();
 
-        // 2. MethodExitEvent
         MethodExitRequest mexr = erm.createMethodExitRequest();
-        if (!"*".equals(classPattern)) {
-            mexr.addClassFilter(classPattern);
+        if (!filterPattern.isEmpty() && !"*".equals(filterPattern)) {
+            mexr.addClassFilter(filterPattern);
         }
-        mexr.setSuspendPolicy(EventRequest.SUSPEND_NONE);
+        mexr.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
         mexr.enable();
 
-        // 3. ClassPrepareEvent (clases cargadas)
+        // Clases cargadas (para crear watchpoints de campos correctamente)
         ClassPrepareRequest cpr = erm.createClassPrepareRequest();
-        if (!"*".equals(classPattern)) {
-            cpr.addClassFilter(classPattern);
+        if (!filterPattern.isEmpty() && !"*".equals(filterPattern)) {
+            cpr.addClassFilter(filterPattern);
         }
-        cpr.setSuspendPolicy(EventRequest.SUSPEND_NONE);
+        cpr.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
         cpr.enable();
 
-        // 4. Watchpoints para campos de clases ya cargadas
-        setupFieldModificationRequests(erm);
+        // Hilo de procesamiento de eventos
+        Thread t = new Thread(this::eventLoop, "JDI-EventLoop");
+        t.setDaemon(true);
+        t.start();
 
-        // Iniciar hilo de procesamiento de eventos
-        running = true;
-        Thread eventThread = new Thread(this::eventLoop, "JDI-EventLoop");
-        eventThread.setDaemon(true);
-        eventThread.start();
-    }
-
-    private void setupFieldModificationRequests(EventRequestManager erm) {
+        // Reanudar la JVM objetivo (necesario si se inició con suspend=y)
         try {
-            for (ReferenceType refType : vm.allClasses()) {
-                if (matchesPattern(refType.name(), classPattern)) {
-                    registerFieldWatchpoints(erm, refType);
-                }
-            }
-        } catch (Exception e) {
-            // Ignorar si no se pueden registrar campos inicialmente
-        }
-    }
-
-    private void registerFieldWatchpoints(EventRequestManager erm, ReferenceType refType) {
-        try {
-            for (Field field : refType.fields()) {
-                ModificationWatchpointRequest mwr = erm.createModificationWatchpointRequest(field);
-                mwr.setSuspendPolicy(EventRequest.SUSPEND_NONE);
-                mwr.enable();
-            }
+            vm.resume();
         } catch (Exception ignored) {
         }
     }
 
-    private boolean matchesPattern(String className, String pattern) {
-        if ("*".equals(pattern)) return true;
-        if (pattern.endsWith(".*")) {
-            String prefix = pattern.substring(0, pattern.length() - 2);
-            return className.startsWith(prefix);
+    private String normalizeFilter(String filter) {
+        if (filter == null || filter.isEmpty() || "*".equals(filter)) {
+            return "*";
         }
-        return className.equals(pattern);
+        if (filter.endsWith(".*") || filter.endsWith("*")) {
+            return filter;
+        }
+        return filter + ".*";
     }
 
     private void eventLoop() {
         try {
-            while (running) {
+            while (running && !terminated) {
                 EventSet eventSet = vm.eventQueue().remove();
                 for (Event event : eventSet) {
-                    // Si se prepara una nueva clase, registrar automáticamente watchpoints de sus atributos
+                    // Al prepararse una clase, creamos watchpoints de sus campos
                     if (event instanceof ClassPrepareEvent cpe) {
-                        ReferenceType refType = cpe.referenceType();
-                        if (matchesPattern(refType.name(), classPattern)) {
-                            registerFieldWatchpoints(vm.eventRequestManager(), refType);
-                        }
+                        createFieldWatchpoints(cpe.referenceType());
                     }
-
+                    // Detección de terminación de la JVM objetivo
+                    if (event instanceof VMDeathEvent || event instanceof VMDisconnectEvent) {
+                        terminated = true;
+                    }
                     JDIEvent jdiEvent = new JDIEvent(event);
                     eventQueue.offer(jdiEvent);
 
-                    // Notificar a listeners registrados
                     for (JDIEventListener l : listeners) {
                         try {
                             l.onEvent(jdiEvent);
@@ -178,11 +159,30 @@ public class JDIClient implements AutoCloseable {
                 }
                 eventSet.resume();
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         } catch (VMDisconnectedException e) {
-            System.out.println("ℹ️ VM objetivo desconectada.");
+            terminated = true;
         } catch (Exception e) {
             if (running) {
                 System.err.println("Error en event loop: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Crea watchpoints de modificación para cada campo de la clase preparada.
+     */
+    private void createFieldWatchpoints(ReferenceType type) {
+        EventRequestManager erm = vm.eventRequestManager();
+        for (Field field : type.fields()) {
+            try {
+                ModificationWatchpointRequest mwr =
+                    erm.createModificationWatchpointRequest(field);
+                mwr.setSuspendPolicy(EventRequest.SUSPEND_EVENT_THREAD);
+                mwr.enable();
+            } catch (Exception ignored) {
+                // Algunos campos (estáticos finales, sintéticos) no admiten watchpoint
             }
         }
     }
@@ -195,8 +195,28 @@ public class JDIClient implements AutoCloseable {
     }
 
     /**
-     * Obtiene la VM para consultas directas.
+     * Obtiene el siguiente evento esperando como máximo {@code timeoutMillis}.
+     *
+     * @return el evento, o {@code null} si se agotó el tiempo
      */
+    public JDIEvent pollEvent(long timeoutMillis) throws InterruptedException {
+        return eventQueue.poll(timeoutMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Obtiene el siguiente evento sin bloquear (o {@code null} si no hay).
+     */
+    public JDIEvent pollEventNow() {
+        return eventQueue.poll();
+    }
+
+    /**
+     * Indica si la JVM objetivo terminó o se desconectó.
+     */
+    public boolean isTerminated() {
+        return terminated;
+    }
+
     public VirtualMachine getVM() {
         return vm;
     }
@@ -204,21 +224,72 @@ public class JDIClient implements AutoCloseable {
     @Override
     public void close() {
         running = false;
-        if (vm != null) {
-            try {
+        try {
+            if (vm != null) {
                 vm.dispose();
-            } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {
+            // La VM ya pudo haberse desconectado; no es un error.
         }
     }
 
     /**
-     * DTO para encapsular eventos JDI y proveer acceso amigable a sus detalles.
+     * Encapsula un evento JDI.
+     * <p>
+     * IMPORTANTE: toda la información (nombres, valor, descripción) se captura
+     * en el constructor, mientras la VM objetivo está viva. Así no se hacen
+     * consultas JDI después de que la VM se desconecta (lo que lanzaría
+     * {@code VMDisconnectedException}).
+     * </p>
      */
     public static class JDIEvent {
         private final Event event;
+        private final String kind;
+        private final String className;
+        private final String memberName;
+        private final String valueText;
+        private final String describe;
 
         public JDIEvent(Event event) {
             this.event = event;
+            String k = "OTHER";
+            String cn = "";
+            String mn = "";
+            String vt = "";
+            String de = "[...] " + (event != null ? event.getClass().getSimpleName() : "null");
+            try {
+                if (event instanceof MethodEntryEvent e) {
+                    Method m = e.method();
+                    k = "ENTER";
+                    cn = simpleName(m.declaringType().name());
+                    mn = m.name();
+                    de = "[ENTER] " + m.declaringType().name() + "." + m.name() + "()";
+                } else if (event instanceof MethodExitEvent e) {
+                    Method m = e.method();
+                    k = "EXIT";
+                    cn = simpleName(m.declaringType().name());
+                    mn = m.name();
+                    de = "[EXIT]  " + m.declaringType().name() + "." + m.name() + "()";
+                } else if (event instanceof ModificationWatchpointEvent e) {
+                    Field f = e.field();
+                    k = "FIELD";
+                    cn = simpleName(f.declaringType().name());
+                    mn = f.name();
+                    vt = valueToString(f, e.valueToBe());
+                    de = "[CAMPO] " + f.declaringType().name() + "." + f.name() + " = " + vt;
+                } else if (event instanceof ClassPrepareEvent e) {
+                    k = "CLASS";
+                    cn = simpleName(e.referenceType().name());
+                    de = "[CLASE] " + e.referenceType().name() + " cargada";
+                }
+            } catch (Exception ex) {
+                // VM desconectada durante la captura: dejar valores seguros
+            }
+            this.kind = k;
+            this.className = cn;
+            this.memberName = mn;
+            this.valueText = vt;
+            this.describe = de;
         }
 
         public Event getEvent() {
@@ -226,62 +297,55 @@ public class JDIClient implements AutoCloseable {
         }
 
         public boolean isMethodEntry() {
-            return event instanceof MethodEntryEvent;
+            return "ENTER".equals(kind) || event instanceof MethodEntryEvent;
         }
 
         public boolean isMethodExit() {
-            return event instanceof MethodExitEvent;
+            return "EXIT".equals(kind) || event instanceof MethodExitEvent;
         }
 
         public boolean isFieldModification() {
-            return event instanceof ModificationWatchpointEvent;
+            return "FIELD".equals(kind) || event instanceof ModificationWatchpointEvent;
         }
 
         public boolean isClassPrepare() {
-            return event instanceof ClassPrepareEvent;
+            return "CLASS".equals(kind) || event instanceof ClassPrepareEvent;
         }
 
-        public String getClassName() {
-            if (event instanceof MethodEntryEvent mee) {
-                return mee.location().declaringType().name();
-            } else if (event instanceof MethodExitEvent mex) {
-                return mex.location().declaringType().name();
-            } else if (event instanceof ModificationWatchpointEvent mwe) {
-                return mwe.field().declaringType().name();
-            } else if (event instanceof ClassPrepareEvent cpe) {
-                return cpe.referenceType().name();
-            }
-            return "";
+        public String kind() {
+            return kind;
+        }
+
+        public String className() {
+            return className;
         }
 
         public String getSimpleClassName() {
-            String full = getClassName();
-            int idx = full.lastIndexOf('.');
-            return idx != -1 ? full.substring(idx + 1) : full;
+            return className;
+        }
+
+        public String memberName() {
+            return memberName;
         }
 
         public String getMethodName() {
-            if (event instanceof MethodEntryEvent mee) {
-                return mee.method().name();
-            } else if (event instanceof MethodExitEvent mex) {
-                return mex.method().name();
-            }
-            return "";
+            return memberName;
         }
 
         public String getFieldName() {
-            if (event instanceof ModificationWatchpointEvent mwe) {
-                return mwe.field().name();
-            }
-            return "";
+            return memberName;
+        }
+
+        public String valueText() {
+            return valueText;
         }
 
         public String getValueToBe() {
-            if (event instanceof ModificationWatchpointEvent mwe) {
-                Value val = mwe.valueToBe();
-                return val != null ? val.toString() : "null";
-            }
-            return "";
+            return valueText;
+        }
+
+        public String describe() {
+            return describe;
         }
 
         @Override
@@ -295,7 +359,35 @@ public class JDIClient implements AutoCloseable {
             } else if (isClassPrepare()) {
                 return "ClassPrepare: " + getSimpleClassName();
             }
-            return "JDIEvent: " + event.getClass().getSimpleName();
+            return describe;
+        }
+
+        /**
+         * Convierte un valor JDI a texto SIN provocar round-trips a la VM.
+         * <p>Evita {@code ObjectReference.toString()} (que consulta la VM).</p>
+         */
+        private static String valueToString(Field field, Value v) {
+            try {
+                if (v == null) {
+                    return "null";
+                }
+                if (v instanceof StringReference sr) {
+                    return "\"" + sr.value() + "\"";
+                }
+                if (v instanceof PrimitiveValue pv) {
+                    return pv.toString();
+                }
+                // Objetos: no llamar toString(); mostrar el tipo declarado del campo
+                return "(" + field.typeName() + ")";
+            } catch (Exception e) {
+                return "?";
+            }
+        }
+
+        private static String simpleName(String fullName) {
+            if (fullName == null) return "";
+            int i = fullName.lastIndexOf('.');
+            return i >= 0 ? fullName.substring(i + 1) : fullName;
         }
     }
 }
