@@ -5,19 +5,39 @@ REM  Ejecuta el programa objetivo y lo visualiza en vivo.
 REM ============================================================
 setlocal enabledelayedexpansion
 
-REM Detectar JAVA
-set "JAVA_CMD=java"
-set "JAVAC_CMD=javac"
+REM Buscar JDK 21 o superior en rutas comunes de Windows
+set "JAVA_CMD="
+set "JAVAC_CMD="
 
 if defined JAVA_HOME (
   if exist "%JAVA_HOME%\bin\java.exe" set "JAVA_CMD=%JAVA_HOME%\bin\java.exe"
   if exist "%JAVA_HOME%\bin\javac.exe" set "JAVAC_CMD=%JAVA_HOME%\bin\javac.exe"
-) else (
-  if exist "C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot\bin\java.exe" (
-    set "JAVA_CMD=C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot\bin\java.exe"
-    set "JAVAC_CMD=C:\Program Files\Microsoft\jdk-21.0.12.101-hotspot\bin\javac.exe"
+)
+
+if not defined JAVA_CMD (
+  for %%P in (
+    "C:\Program Files\Java\jdk-21*\bin"
+    "C:\Program Files\Eclipse Adoptium\jdk-21*\bin"
+    "C:\Program Files\Semeru\jdk-21*\bin"
+    "C:\Program Files\Amazon Corretto\jdk21*\bin"
+    "C:\Program Files\Microsoft\jdk-21*\bin"
+    "C:\Program Files\BellSoft\LibericaJDK-21*\bin"
+    "C:\Program Files\Zulu\zulu-21*\bin"
+    "C:\Program Files\Java\jdk-22*\bin"
+    "C:\Program Files\Java\jdk-23*\bin"
+  ) do (
+    if not defined JAVA_CMD (
+      if exist "%%~P\java.exe" (
+        set "JAVA_CMD=%%~P\java.exe"
+        set "JAVAC_CMD=%%~P\javac.exe"
+      )
+    )
   )
 )
+
+REM Si aun no se encuentra, usar el del PATH
+if not defined JAVA_CMD set "JAVA_CMD=java"
+if not defined JAVAC_CMD set "JAVAC_CMD=javac"
 
 cd /d "%~dp0.."
 
@@ -29,7 +49,7 @@ if not exist "build\classes\tucantrace\Main.class" (
   for /f "delims=" %%f in ('dir /b /s "src\*.java"') do echo %%f>> "%TEMP%\tt-sources.txt"
   "%JAVAC_CMD%" -encoding UTF-8 -cp "lib\*" -d "build\classes" @"%TEMP%\tt-sources.txt"
   if errorlevel 1 (
-    echo Error al compilar TucanTrace.
+    echo Error al compilar TucanTrace. Verifica que tengas JDK 21 instalado.
     pause
     exit /b 1
   )
